@@ -4,8 +4,8 @@ import numpy as np
 import altair as alt
 import re
 
-st.set_page_config(page_title="维修分析Dashboard（噼里啪啦版）", layout="wide")
-st.title("🔧 维修分析 Dashboard（噼里啪啦版）")
+st.set_page_config(page_title="维修分析（乱写代码版）", layout="wide")
+st.title("🔧 维修分析（乱写代码版）")
 
 file = st.file_uploader("上传维修报告（Excel/CSV）", type=["xlsx", "csv"])
 
