@@ -4,8 +4,8 @@ import numpy as np
 import altair as alt
 import re
 
-st.set_page_config(page_title="维修分析（乱写代码版）", layout="wide")
-st.title("🔧 维修分析（乱写代码版）")
+st.set_page_config(page_title="维修分析（炫酷霹雳版）", layout="wide")
+st.title("🔧 维修分析 Dashboard（炫酷霹雳版）")
 
 file = st.file_uploader("上传维修报告（Excel/CSV）", type=["xlsx", "csv"])
 
@@ -30,17 +30,10 @@ def calc_tat(row):
             return None
         if row["shipment_date"] < row["received_date"]:
             return None
-        return np.busday_count(row["received_date"].date(), row["shipment_date"].date())
-    except Exception:
-        return None
-
-
-def extract_sku(text):
-    if pd.isna(text):
-        return None
-    try:
-        matches = re.findall(r"Replaced SKU[:：]?\s*([A-Za-z0-9\-]+)", str(text), flags=re.IGNORECASE)
-        return matches if matches else None
+        return np.busday_count(
+            row["received_date"].date(),
+            row["shipment_date"].date()
+        )
     except Exception:
         return None
 
@@ -50,6 +43,15 @@ def safe_ratio(series):
     if total == 0 or pd.isna(total):
         return series * 0
     return series / total
+
+
+def find_replaced_sku_columns(df):
+    sku_cols = []
+    for col in df.columns:
+        col_str = str(col).strip().lower()
+        if re.fullmatch(r"replaced sku\d*", col_str):
+            sku_cols.append(col)
+    return sku_cols
 
 
 # =============================
@@ -382,26 +384,44 @@ if file:
     # =============================
     st.subheader("🔧 更换SKU分析 Top10")
 
-    df["sku_list"] = df["issue_desc"].apply(extract_sku)
-    sku_df = df.explode("sku_list")
+    sku_columns = find_replaced_sku_columns(df)
 
-    valid_sku = sku_df["sku_list"].dropna().astype(str).str.strip()
-    if not valid_sku.empty:
-        sku_top = valid_sku.value_counts().head(10).reset_index()
-        sku_top.columns = ["SKU", "数量"]
-
-        col1, col2 = st.columns([1, 2])
-        col1.dataframe(sku_top, use_container_width=True)
-        col2.altair_chart(
-            alt.Chart(sku_top).mark_bar().encode(
-                x=alt.X("数量:Q", title="数量"),
-                y=alt.Y("SKU:N", sort="-x", title="SKU"),
-                tooltip=["SKU", "数量"]
-            ),
-            use_container_width=True
+    if sku_columns:
+        sku_long = (
+            df[sku_columns]
+            .copy()
+            .apply(lambda col: col.astype(str).str.strip())
+            .replace({
+                "": np.nan,
+                "nan": np.nan,
+                "none": np.nan,
+                "null": np.nan
+            })
+            .melt(value_name="SKU")
         )
+
+        valid_sku = sku_long["SKU"].dropna()
+
+        if not valid_sku.empty:
+            sku_top = valid_sku.value_counts().head(10).reset_index()
+            sku_top.columns = ["SKU", "数量"]
+
+            st.caption(f"已识别SKU字段：{', '.join(sku_columns)}")
+
+            col1, col2 = st.columns([1, 2])
+            col1.dataframe(sku_top, use_container_width=True)
+            col2.altair_chart(
+                alt.Chart(sku_top).mark_bar().encode(
+                    x=alt.X("数量:Q", title="数量"),
+                    y=alt.Y("SKU:N", sort="-x", title="SKU"),
+                    tooltip=["SKU", "数量"]
+                ),
+                use_container_width=True
+            )
+        else:
+            st.info("已识别到 Replaced SKU 相关字段，但这些列中没有有效SKU数据")
     else:
-        st.info("未识别到包含 'Replaced SKU' 的数据")
+        st.info("未识别到 Replaced SKU / Replaced SKU2 / Replaced SKU3 等字段，请检查表头是否在第一行")
 
     # =============================
     # 技术员分析
@@ -419,10 +439,9 @@ if file:
     # 数据导出
     # =============================
     export_df = df.copy()
-    if "sku_list" in export_df.columns:
-        export_df["sku_list"] = export_df["sku_list"].apply(
-            lambda x: ", ".join(x) if isinstance(x, list) else x
-        )
+
+    if "month" in export_df.columns:
+        export_df["month"] = export_df["month"].astype(str)
 
     st.download_button(
         "下载清洗后数据",
