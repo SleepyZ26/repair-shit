@@ -14,31 +14,44 @@ if file:
     else:
         df = pd.read_excel(file)
 
-    df.columns = df.columns.str.strip()
+    # =========================
+    # ✅ 关键修复1：统一列名（解决KeyError）
+    # =========================
+    df.columns = df.columns.str.strip().str.lower()
 
-    # 字段映射
     rename_map = {
-        "Repair order": "repair_id",
-        "Date of receipt": "received_date",
-        "Date of shipment": "shipment_date",
-        "Nation/State": "country",
-        "Warranty status": "repair_type",
-        "Problem description by AVONO": "issue_desc",
-        "Model": "model",
-        "SN": "sn",
+        "repair order": "repair_id",
+        "date of receipt": "received_date",
+        "date of shipment": "shipment_date",
+        "nation": "country",
+        "country": "country",
+        "warranty status": "repair_type",
+        "description": "issue_desc",
+        "model": "model",
+        "sn": "sn",
         "person": "technician",
-        "Repair fee": "repair_fee",
-        "Return shipment fee": "shipping_fee"
+        "repair fee": "repair_fee",
+        "return shipment fee": "shipping_fee"
     }
 
     df = df.rename(columns=rename_map)
 
+    # 👉 防止缺字段直接报错
+    required_cols = ["received_date", "shipment_date", "country", "repair_type"]
+    for col in required_cols:
+        if col not in df.columns:
+            st.error(f"❌ 缺少字段: {col}")
+            st.write("当前列名：", df.columns.tolist())
+            st.stop()
+
+    # =========================
     # 日期处理
+    # =========================
     df["received_date"] = pd.to_datetime(df["received_date"], errors="coerce")
     df["shipment_date"] = pd.to_datetime(df["shipment_date"], errors="coerce")
 
     # =========================
-    # ✅ 工作日TAT计算（核心升级）
+    # ✅ 关键修复2：工作日TAT
     # =========================
     df["TAT"] = df.apply(
         lambda x: np.busday_count(
@@ -48,26 +61,39 @@ if file:
         axis=1
     )
 
+    # =========================
     # 类型映射
+    # =========================
     type_map = {
-        "IW": "保内",
-        "OW": "保外",
-        "DOA": "DOA"
+        "iw": "保内",
+        "ow": "保外",
+        "doa": "DOA"
     }
-    df["repair_type"] = df["repair_type"].map(type_map).fillna(df["repair_type"])
+    df["repair_type"] = df["repair_type"].astype(str).str.lower().map(type_map).fillna(df["repair_type"])
 
+    # =========================
     # 费用处理
-    df["repair_fee"] = pd.to_numeric(df["repair_fee"], errors="coerce").fillna(0)
-    df["shipping_fee"] = pd.to_numeric(df["shipping_fee"], errors="coerce").fillna(0)
+    # =========================
+    df["repair_fee"] = pd.to_numeric(df.get("repair_fee", 0), errors="coerce").fillna(0)
+    df["shipping_fee"] = pd.to_numeric(df.get("shipping_fee", 0), errors="coerce").fillna(0)
     df["total_cost"] = df["repair_fee"] + df["shipping_fee"]
 
     # =========================
-    # KPI
+    # ✅ 关键修复3：只算保内TAT
     # =========================
-    avg_tat = df["TAT"].mean()
-    rate_5 = (df["TAT"] <= 5).mean()
-    rate_10 = (df["TAT"] <= 10).mean()
+    df_iw = df[df["repair_type"] == "保内"]
 
+    if df_iw.empty:
+        st.warning("⚠️ 当前数据没有保内维修记录")
+        avg_tat, rate_5, rate_10 = 0, 0, 0
+    else:
+        avg_tat = df_iw["TAT"].mean()
+        rate_5 = (df_iw["TAT"] <= 5).mean()
+        rate_10 = (df_iw["TAT"] <= 10).mean()
+
+    # =========================
+    # 其他KPI
+    # =========================
     df = df.sort_values(by="received_date")
     df["repeat"] = df.duplicated(subset=["sn"], keep=False)
     repeat_rate = df["repeat"].mean()
@@ -77,7 +103,7 @@ if file:
     # =========================
     # KPI展示
     # =========================
-    st.subheader("📊 核心指标")
+    st.subheader("📊 核心指标（仅保内）")
 
     col1, col2, col3, col4, col5 = st.columns(5)
 
