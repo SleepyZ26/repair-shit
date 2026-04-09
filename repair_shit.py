@@ -4,10 +4,12 @@ import numpy as np
 import altair as alt
 import re
 
-st.set_page_config(page_title="维修分析（炫酷霹雳版）", layout="wide")
-st.title("🔧 维修分析 Dashboard（炫酷霹雳版）")
+st.set_page_config(page_title="维修分析Dashboard（SKU映射版）", layout="wide")
+st.title("🔧 维修分析 Dashboard（SKU映射版）")
 
-file = st.file_uploader("上传维修报告（Excel/CSV）", type=["xlsx", "csv"])
+file = st.file_uploader("上传维修报告（Excel/CSV）", type=["xlsx", "csv"], key="repair_file")
+sku_file = st.file_uploader("上传SKU对照表（可选，Excel/CSV）", type=["xlsx", "csv"], key="sku_map_file")
+
 
 # =============================
 # 工具函数
@@ -49,9 +51,81 @@ def find_replaced_sku_columns(df):
     sku_cols = []
     for col in df.columns:
         col_str = str(col).strip().lower()
-        if re.fullmatch(r"replaced sku\d*", col_str):
-            sku_cols.append(col)
+        if col_str.startswith("replaced sku"):
+            suffix = col_str.replace("replaced sku", "").strip()
+            if suffix == "" or suffix.isdigit():
+                sku_cols.append(col)
     return sku_cols
+
+
+def load_file(uploaded_file):
+    if uploaded_file.name.endswith(".csv"):
+        return pd.read_csv(uploaded_file)
+    return pd.read_excel(uploaded_file)
+
+
+def normalize_text_series(series):
+    return (
+        series.fillna("未知")
+        .astype(str)
+        .str.strip()
+        .replace("", "未知")
+    )
+
+
+def load_sku_mapping(uploaded_sku_file):
+    if uploaded_sku_file is None:
+        return None
+
+    try:
+        sku_map_df = load_file(uploaded_sku_file)
+        sku_map_df.columns = sku_map_df.columns.astype(str).str.strip().str.lower()
+
+        rename_map = {
+            "sku": "SKU",
+            "sku code": "SKU",
+            "item sku": "SKU",
+            "part sku": "SKU",
+            "中文名称": "中文名称",
+            "名称": "中文名称",
+            "name": "中文名称",
+            "description": "中文名称",
+            "desc": "中文名称",
+            "part name": "中文名称"
+        }
+        sku_map_df = sku_map_df.rename(columns={k: v for k, v in rename_map.items() if k in sku_map_df.columns})
+
+        if "SKU" not in sku_map_df.columns:
+            st.warning("SKU对照表缺少 SKU 列，将忽略该对照表。")
+            return None
+
+        if "中文名称" not in sku_map_df.columns:
+            sku_map_df["中文名称"] = "未提供"
+
+        sku_map_df["SKU"] = sku_map_df["SKU"].astype(str).str.strip()
+        sku_map_df["中文名称"] = sku_map_df["中文名称"].astype(str).str.strip()
+
+        sku_map_df = sku_map_df[["SKU", "中文名称"]].drop_duplicates(subset=["SKU"])
+
+        return sku_map_df
+
+    except Exception as e:
+        st.error(f"SKU对照表读取失败: {e}")
+        return None
+
+
+def attach_sku_name(df_sku_result, sku_map_df):
+    if df_sku_result is None or df_sku_result.empty:
+        return df_sku_result
+
+    if sku_map_df is None:
+        if "中文名称" not in df_sku_result.columns:
+            df_sku_result["中文名称"] = "未匹配"
+        return df_sku_result
+
+    merged = df_sku_result.merge(sku_map_df, on="SKU", how="left")
+    merged["中文名称"] = merged["中文名称"].fillna("未匹配")
+    return merged
 
 
 # =============================
@@ -59,13 +133,17 @@ def find_replaced_sku_columns(df):
 # =============================
 if file:
     try:
-        if file.name.endswith(".csv"):
-            df = pd.read_csv(file)
-        else:
-            df = pd.read_excel(file)
+        df = load_file(file)
     except Exception as e:
-        st.error(f"文件读取失败: {e}")
+        st.error(f"维修报告读取失败: {e}")
         st.stop()
+
+    sku_map_df = load_sku_mapping(sku_file)
+
+    if sku_map_df is not None:
+        st.success("✅ 已加载SKU对照表")
+    else:
+        st.info("未上传有效SKU对照表，SKU分析将仅显示SKU编码")
 
     df = safe_columns(df)
 
@@ -108,7 +186,11 @@ if file:
     df["TAT"] = df.apply(calc_tat, axis=1)
 
     # 类型映射
-    type_map = {"iw": "保内", "ow": "保外", "doa": "DOA"}
+    type_map = {
+        "iw": "保内",
+        "ow": "保外",
+        "doa": "DOA"
+    }
     df["repair_type"] = (
         df["repair_type"]
         .astype(str)
@@ -123,14 +205,21 @@ if file:
     df["shipping_fee"] = pd.to_numeric(df.get("shipping_fee", 0), errors="coerce").fillna(0)
     df["total_cost"] = df["repair_fee"] + df["shipping_fee"]
 
+    # 标准化常用字段
+    df["country"] = normalize_text_series(df["country"])
+    df["model"] = normalize_text_series(df["model"])
+    df["issue_desc"] = normalize_text_series(df["issue_desc"])
+    df["technician"] = normalize_text_series(df["technician"])
+    df["sn"] = df["sn"].astype(str).str.strip()
+
     # =============================
     # 筛选器
     # =============================
     st.sidebar.header("筛选条件")
 
-    country_vals = sorted(df["country"].dropna().astype(str).unique().tolist()) if "country" in df else []
-    type_vals = sorted(df["repair_type"].dropna().astype(str).unique().tolist()) if "repair_type" in df else []
-    model_vals = sorted(df["model"].dropna().astype(str).unique().tolist()) if "model" in df else []
+    country_vals = sorted(df["country"].dropna().unique().tolist())
+    type_vals = sorted(df["repair_type"].dropna().astype(str).unique().tolist())
+    model_vals = sorted(df["model"].dropna().unique().tolist())
 
     country_filter = st.sidebar.multiselect("国家", country_vals, default=country_vals)
     type_filter = st.sidebar.multiselect("维修类型", type_vals, default=type_vals)
@@ -160,18 +249,15 @@ if file:
     # =============================
     # KPI
     # =============================
-    df_iw = df[df["repair_type"] == "保内"] if "repair_type" in df else pd.DataFrame()
+    df_iw = df[df["repair_type"] == "保内"]
 
     avg_tat = df_iw["TAT"].dropna().mean() if not df_iw.empty else 0
     rate_5 = (df_iw["TAT"] <= 5).mean() if not df_iw.empty else 0
     rate_10 = (df_iw["TAT"] <= 10).mean() if not df_iw.empty else 0
 
-    if "sn" in df.columns:
-        df = df.sort_values(by=["sn", "received_date"])
-        df["repeat"] = df.duplicated(subset=["sn"], keep="first")
-        repeat_rate = df["repeat"].mean()
-    else:
-        repeat_rate = 0
+    df = df.sort_values(by=["sn", "received_date"])
+    df["repeat"] = df.duplicated(subset=["sn"], keep="first")
+    repeat_rate = df["repeat"].mean() if not df.empty else 0
 
     doa_rate = (df["repair_type"] == "DOA").mean() if "repair_type" in df.columns else 0
 
@@ -289,10 +375,6 @@ if file:
 
     issue_top = (
         df["issue_desc"]
-        .fillna("未知")
-        .astype(str)
-        .str.strip()
-        .replace("", "未知")
         .value_counts()
         .head(10)
         .reset_index()
@@ -338,10 +420,6 @@ if file:
 
     model_count = (
         df["model"]
-        .fillna("未知")
-        .astype(str)
-        .str.strip()
-        .replace("", "未知")
         .value_counts()
         .head(10)
         .reset_index()
@@ -388,33 +466,86 @@ if file:
 
     if sku_columns:
         sku_long = (
-            df[sku_columns]
+            df[["model"] + sku_columns]
             .copy()
-            .apply(lambda col: col.astype(str).str.strip())
-            .replace({
-                "": np.nan,
-                "nan": np.nan,
-                "none": np.nan,
-                "null": np.nan
-            })
-            .melt(value_name="SKU")
+            .assign(model=lambda x: x["model"].fillna("未知").astype(str).str.strip().replace("", "未知"))
+            .melt(id_vars=["model"], value_vars=sku_columns, value_name="SKU")
         )
 
-        valid_sku = sku_long["SKU"].dropna()
+        sku_long["SKU"] = sku_long["SKU"].astype(str).str.strip()
+        sku_long = sku_long.replace({
+            "": np.nan,
+            "nan": np.nan,
+            "none": np.nan,
+            "null": np.nan
+        })
+        sku_long = sku_long.dropna(subset=["SKU"])
 
-        if not valid_sku.empty:
-            sku_top = valid_sku.value_counts().head(10).reset_index()
+        if not sku_long.empty:
+            sku_top = sku_long["SKU"].value_counts().head(10).reset_index()
             sku_top.columns = ["SKU", "数量"]
+            sku_top = attach_sku_name(sku_top, sku_map_df)
+            sku_top = sku_top[["SKU", "中文名称", "数量"]]
 
             st.caption(f"已识别SKU字段：{', '.join(sku_columns)}")
 
-            col1, col2 = st.columns([1, 2])
+            col1, col2 = st.columns([1.2, 2])
             col1.dataframe(sku_top, use_container_width=True)
             col2.altair_chart(
                 alt.Chart(sku_top).mark_bar().encode(
                     x=alt.X("数量:Q", title="数量"),
                     y=alt.Y("SKU:N", sort="-x", title="SKU"),
-                    tooltip=["SKU", "数量"]
+                    tooltip=["SKU", "中文名称", "数量"]
+                ),
+                use_container_width=True
+            )
+
+            # =============================
+            # SKU + Model 关联分析
+            # =============================
+            st.subheader("🔗 SKU + Model 关联分析")
+
+            model_sku_top = (
+                sku_long.groupby(["model", "SKU"])
+                .size()
+                .reset_index(name="数量")
+                .sort_values(["数量", "model", "SKU"], ascending=[False, True, True])
+            )
+
+            model_sku_top = attach_sku_name(model_sku_top, sku_map_df)
+            model_sku_top = model_sku_top[["model", "SKU", "中文名称", "数量"]]
+
+            st.write("Model 与 SKU 组合 Top20")
+            st.dataframe(model_sku_top.head(20), use_container_width=True)
+
+            pair_chart = alt.Chart(model_sku_top.head(20)).mark_bar().encode(
+                x=alt.X("数量:Q", title="更换数量"),
+                y=alt.Y("model:N", sort="-x", title="Model"),
+                color=alt.Color("SKU:N", title="SKU"),
+                tooltip=["model", "SKU", "中文名称", "数量"]
+            )
+            st.altair_chart(pair_chart, use_container_width=True)
+
+            model_options = sorted(sku_long["model"].dropna().unique().tolist())
+            selected_model = st.selectbox("选择一个Model查看常更换SKU", options=model_options)
+
+            model_sku_detail = (
+                sku_long[sku_long["model"] == selected_model]["SKU"]
+                .value_counts()
+                .head(10)
+                .reset_index()
+            )
+            model_sku_detail.columns = ["SKU", "数量"]
+            model_sku_detail = attach_sku_name(model_sku_detail, sku_map_df)
+            model_sku_detail = model_sku_detail[["SKU", "中文名称", "数量"]]
+
+            col1, col2 = st.columns([1.2, 2])
+            col1.dataframe(model_sku_detail, use_container_width=True)
+            col2.altair_chart(
+                alt.Chart(model_sku_detail).mark_bar().encode(
+                    x=alt.X("数量:Q", title="数量"),
+                    y=alt.Y("SKU:N", sort="-x", title=f"{selected_model} 对应SKU"),
+                    tooltip=["SKU", "中文名称", "数量"]
                 ),
                 use_container_width=True
             )
