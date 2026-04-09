@@ -4,8 +4,8 @@ import numpy as np
 import altair as alt
 import re
 
-st.set_page_config(page_title="维修分析（无敌炫酷版）", layout="wide")
-st.title("🔧 维修分析（无敌炫酷版）")
+st.set_page_config(page_title="维修分析（一坨一坨版）", layout="wide")
+st.title("🔧 维修分析（一坨一坨版）")
 
 file = st.file_uploader("上传维修报告（Excel/CSV）", type=["xlsx", "csv"], key="repair_file")
 sku_file = st.file_uploader("上传SKU对照表（可选，Excel/CSV）", type=["xlsx", "csv"], key="sku_map_file")
@@ -45,6 +45,22 @@ def safe_ratio(series):
     if total == 0 or pd.isna(total):
         return series * 0
     return series / total
+
+
+def normalize_sku_value(x):
+    if pd.isna(x):
+        return None
+
+    s = str(x).strip()
+
+    if s.lower() in ["", "nan", "none", "null"]:
+        return None
+
+    # 去掉 Excel / pandas 读出的 .0
+    if re.fullmatch(r"\d+\.0", s):
+        s = s[:-2]
+
+    return s
 
 
 def find_replaced_sku_columns(df):
@@ -102,8 +118,9 @@ def load_sku_mapping(uploaded_sku_file):
         if "中文名称" not in sku_map_df.columns:
             sku_map_df["中文名称"] = "未提供"
 
-        sku_map_df["SKU"] = sku_map_df["SKU"].astype(str).str.strip()
+        sku_map_df["SKU"] = sku_map_df["SKU"].apply(normalize_sku_value)
         sku_map_df["中文名称"] = sku_map_df["中文名称"].astype(str).str.strip()
+        sku_map_df = sku_map_df.dropna(subset=["SKU"])
 
         sku_map_df = sku_map_df[["SKU", "中文名称"]].drop_duplicates(subset=["SKU"])
 
@@ -123,7 +140,10 @@ def attach_sku_name(df_sku_result, sku_map_df):
             df_sku_result["中文名称"] = "未匹配"
         return df_sku_result
 
-    merged = df_sku_result.merge(sku_map_df, on="SKU", how="left")
+    merged = df_sku_result.copy()
+    merged["SKU"] = merged["SKU"].apply(normalize_sku_value)
+
+    merged = merged.merge(sku_map_df, on="SKU", how="left")
     merged["中文名称"] = merged["中文名称"].fillna("未匹配")
     return merged
 
@@ -472,22 +492,16 @@ if file:
             .melt(id_vars=["model"], value_vars=sku_columns, value_name="SKU")
         )
 
-        sku_long["SKU"] = sku_long["SKU"].astype(str).str.strip()
-        sku_long = sku_long.replace({
-            "": np.nan,
-            "nan": np.nan,
-            "none": np.nan,
-            "null": np.nan
-        })
+        sku_long["SKU"] = sku_long["SKU"].apply(normalize_sku_value)
         sku_long = sku_long.dropna(subset=["SKU"])
 
         if not sku_long.empty:
+            st.caption(f"已识别SKU字段：{', '.join(sku_columns)}")
+
             sku_top = sku_long["SKU"].value_counts().head(10).reset_index()
             sku_top.columns = ["SKU", "数量"]
             sku_top = attach_sku_name(sku_top, sku_map_df)
             sku_top = sku_top[["SKU", "中文名称", "数量"]]
-
-            st.caption(f"已识别SKU字段：{', '.join(sku_columns)}")
 
             col1, col2 = st.columns([1.2, 2])
             col1.dataframe(sku_top, use_container_width=True)
@@ -549,6 +563,12 @@ if file:
                 ),
                 use_container_width=True
             )
+
+            with st.expander("查看SKU匹配调试信息"):
+                st.write("维修报告中的SKU示例：", sku_long["SKU"].dropna().unique()[:10])
+                if sku_map_df is not None:
+                    st.write("对照表中的SKU示例：", sku_map_df["SKU"].dropna().unique()[:10])
+
         else:
             st.info("已识别到 Replaced SKU 相关字段，但这些列中没有有效SKU数据")
     else:
