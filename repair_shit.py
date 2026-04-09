@@ -4,8 +4,8 @@ import numpy as np
 import altair as alt
 import re
 
-st.set_page_config(page_title="维修分析Dashboard（SKU映射版）", layout="wide")
-st.title("🔧 维修分析 Dashboard（SKU映射版）")
+st.set_page_config(page_title="维修分析（无敌炫酷版）", layout="wide")
+st.title("🔧 维修分析（无敌炫酷版）")
 
 file = st.file_uploader("上传维修报告（Excel/CSV）", type=["xlsx", "csv"], key="repair_file")
 sku_file = st.file_uploader("上传SKU对照表（可选，Excel/CSV）", type=["xlsx", "csv"], key="sku_map_file")
